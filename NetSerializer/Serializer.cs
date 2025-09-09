@@ -34,6 +34,7 @@ namespace NetSerializer
 			new ListSerializer(),
 			new NetListAsArraySerializer(),
 			new HashSetSerializer(),
+			new LinkedListSerializer(),
 			new GenericSerializer(),
 		};
 
