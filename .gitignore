@@ -5,3 +5,5 @@ obj
 save
 packages
 
+# C# Dev Kit cache file
+*.lscache
