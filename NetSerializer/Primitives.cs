@@ -1,22 +1,30 @@
 ﻿/*
  * Copyright 2015 Tomi Valkeinen
- * 
+ *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
 using System;
-using System.Linq;
 using System.IO;
 using System.Reflection;
 using System.Text;
-using System.Collections.Generic;
+using System.Diagnostics;
+#if NETCOREAPP
+using System.Runtime.CompilerServices;
+using System.Text.Unicode;
+using System.Buffers.Binary;
+using System.Buffers;
+#endif
 
 namespace NetSerializer
 {
 	public static class Primitives
 	{
+		private const int StringByteBufferLength = 256;
+		private const int StringCharBufferLength = 128;
+
 		public static MethodInfo GetWritePrimitive(Type type)
 		{
 			return typeof(Primitives).GetMethod("WritePrimitive",
@@ -213,26 +221,41 @@ namespace NetSerializer
 		public static unsafe void WritePrimitive(Stream stream, float value)
 		{
 			uint v = *(uint*)(&value);
-			WriteVarint32(stream, v);
+			WriteUInt32(stream, v);
 		}
 
 		public static unsafe void ReadPrimitive(Stream stream, out float value)
 		{
-			uint v = ReadVarint32(stream);
+			uint v = ReadUInt32(stream);
 			value = *(float*)(&v);
 		}
 
 		public static unsafe void WritePrimitive(Stream stream, double value)
 		{
 			ulong v = *(ulong*)(&value);
-			WriteVarint64(stream, v);
+			WriteUInt64(stream, v);
 		}
 
 		public static unsafe void ReadPrimitive(Stream stream, out double value)
 		{
-			ulong v = ReadVarint64(stream);
+			ulong v = ReadUInt64(stream);
 			value = *(double*)(&v);
 		}
+
+#if NET5_0_OR_GREATER
+        public static void WritePrimitive(Stream stream, Half value)
+        {
+            ushort v = Unsafe.As<Half, ushort>(ref value);
+            WriteUInt16(stream, v);
+        }
+
+        public static void ReadPrimitive(Stream stream, out Half value)
+        {
+            var v = ReadUInt16(stream);
+            value = Unsafe.As<ushort, Half>(ref v);
+        }
+#endif
+
 #else
 		public static void WritePrimitive(Stream stream, float value)
 		{
@@ -249,13 +272,158 @@ namespace NetSerializer
 		public static void WritePrimitive(Stream stream, double value)
 		{
 			ulong v = (ulong)BitConverter.DoubleToInt64Bits(value);
-			WriteVarint64(stream, v);
+			WriteUInt64(stream, v);
 		}
 
 		public static void ReadPrimitive(Stream stream, out double value)
 		{
-			ulong v = ReadVarint64(stream);
+			ulong v = ReadUInt64(stream);
 			value = BitConverter.Int64BitsToDouble((long)v);
+		}
+
+#if NET5_0_OR_GREATER
+		public static void WritePrimitive(Stream stream, Half value)
+		{
+			WritePrimitive(stream, (double)value);
+		}
+
+		public static void ReadPrimitive(Stream stream, out Half value)
+		{
+			double v;
+			ReadPrimitive(stream, out v);
+			value = (Half)v;
+		}
+#endif
+
+#endif
+
+		private static void WriteUInt16(Stream stream, ushort value)
+	    {
+	        stream.WriteByte((byte) value);
+	        stream.WriteByte((byte) (value >> 8));
+	    }
+
+		private static ushort ReadUInt16(Stream stream)
+		{
+            ushort a = 0;
+
+            for (var i = 0; i < 16; i += 8)
+            {
+                var val = stream.ReadByte();
+                if (val == -1)
+                    throw new EndOfStreamException();
+
+                a |= (ushort) (val << i);
+            }
+
+            return a;
+		}
+
+		// 32 and 64 bit variants use stackalloc when everything is available since it's faster.
+
+#if !NETCOREAPP
+		private static void WriteUInt32(Stream stream, uint value)
+		{
+			stream.WriteByte((byte) value);
+			stream.WriteByte((byte) (value >> 8));
+			stream.WriteByte((byte) (value >> 16));
+			stream.WriteByte((byte) (value >> 24));
+		}
+
+		private static void WriteUInt64(Stream stream, ulong value)
+		{
+			stream.WriteByte((byte) value);
+			stream.WriteByte((byte) (value >> 8));
+			stream.WriteByte((byte) (value >> 16));
+			stream.WriteByte((byte) (value >> 24));
+			stream.WriteByte((byte) (value >> 32));
+			stream.WriteByte((byte) (value >> 40));
+			stream.WriteByte((byte) (value >> 48));
+			stream.WriteByte((byte) (value >> 56));
+		}
+
+		private static uint ReadUInt32(Stream stream)
+		{
+			uint a = 0;
+
+			for (var i = 0; i < 32; i += 8)
+			{
+				var val = stream.ReadByte();
+				if (val < 0)
+					throw new EndOfStreamException();
+
+				a |= (uint)val << i;
+			}
+
+			return a;
+		}
+
+        private static ulong ReadUInt64(Stream stream)
+        {
+	        ulong a = 0;
+
+            for (var i = 0; i < 64; i += 8)
+            {
+            	var val = stream.ReadByte();
+            	if (val < 0)
+            		throw new EndOfStreamException();
+
+            	a |= (ulong)val << i;
+            }
+
+            return a;
+        }
+#else
+		private static void WriteUInt32(Stream stream, uint value)
+		{
+			Span<byte> buf = stackalloc byte[4];
+			BinaryPrimitives.WriteUInt32LittleEndian(buf, value);
+
+			stream.Write(buf);
+		}
+
+		private static void WriteUInt64(Stream stream, ulong value)
+		{
+			Span<byte> buf = stackalloc byte[8];
+			BinaryPrimitives.WriteUInt64LittleEndian(buf, value);
+
+			stream.Write(buf);
+		}
+
+		private static uint ReadUInt32(Stream stream)
+		{
+			Span<byte> buf = stackalloc byte[4];
+			var wSpan = buf;
+
+			while (true)
+			{
+				var read = stream.Read(wSpan);
+				if (read == 0)
+					throw new EndOfStreamException();
+				if (read == wSpan.Length)
+					break;
+				wSpan = wSpan[read..];
+			}
+
+			return BinaryPrimitives.ReadUInt32LittleEndian(buf);
+		}
+
+		private static ulong ReadUInt64(Stream stream)
+		{
+			Span<byte> buf = stackalloc byte[8];
+			var wSpan = buf;
+
+			while (true)
+			{
+				var read = stream.Read(wSpan);
+				if (read == 0)
+					throw new EndOfStreamException();
+				if (read == wSpan.Length)
+					break;
+				wSpan = wSpan[read..];
+			}
+
+			return BinaryPrimitives.ReadUInt64LittleEndian(buf);
 		}
 #endif
 
@@ -318,7 +486,120 @@ namespace NetSerializer
 			value = new Decimal(arr);
 		}
 
-#if NO_UNSAFE
+#if NETCOREAPP
+		public static void WritePrimitive(Stream stream, string value)
+		{
+			if (value == null)
+			{
+				WritePrimitive(stream, (uint)0);
+				return;
+			}
+
+			if (value.Length == 0)
+			{
+				WritePrimitive(stream, (uint)1);
+				return;
+			}
+
+			Span<byte> buf = stackalloc byte[StringByteBufferLength];
+
+			var totalChars = value.Length;
+			var totalBytes = Encoding.UTF8.GetByteCount(value);
+
+			WritePrimitive(stream, (uint)totalBytes + 1);
+			WritePrimitive(stream, (uint)totalChars);
+
+			var totalRead = 0;
+			ReadOnlySpan<char> span = value;
+			for (;;)
+			{
+				var finalChunk = totalRead + totalChars >= totalChars;
+				Utf8.FromUtf16(span, buf, out var read, out var wrote, isFinalBlock: finalChunk);
+				stream.Write(buf.Slice(0, wrote));
+				totalRead += read;
+				if (read >= totalChars)
+					break;
+
+				span = span[read..];
+				totalChars -= read;
+			}
+		}
+
+		// We cache the delegate in a static here to avoid a delegate allocation on every call to ReadPrimitive.
+		private static readonly SpanAction<char, (int, Stream)> _stringSpanRead = StringSpanRead;
+
+		public static void ReadPrimitive(Stream stream, out string value)
+		{
+			ReadPrimitive(stream, out uint totalBytes);
+
+			if (totalBytes == 0)
+			{
+				value = null;
+				return;
+			}
+
+			if (totalBytes == 1)
+			{
+				value = string.Empty;
+				return;
+			}
+
+			totalBytes -= 1;
+
+			ReadPrimitive(stream, out uint totalChars);
+
+			value = string.Create((int) totalChars, ((int) totalBytes, stream), _stringSpanRead);
+		}
+
+		private static void StringSpanRead(Span<char> span, (int totalBytes, Stream stream) tuple)
+		{
+			Span<byte> buf = stackalloc byte[StringByteBufferLength];
+
+			var (totalBytes, stream) = tuple;
+
+			var totalBytesRead = 0;
+			var totalCharsRead = 0;
+			var writeBufStart = 0;
+
+			while (totalBytesRead < totalBytes)
+			{
+				var bytesLeft = totalBytes - totalBytesRead;
+				var bytesReadLeft = Math.Min(buf.Length, bytesLeft);
+				var writeSlice = buf.Slice(writeBufStart, bytesReadLeft - writeBufStart);
+				var bytesInBuffer = stream.Read(writeSlice);
+				if (bytesInBuffer == 0)
+					throw new EndOfStreamException();
+
+				var readFromStream = bytesInBuffer + writeBufStart;
+				var final = readFromStream == bytesLeft;
+				var status = Utf8.ToUtf16(buf[..readFromStream], span[totalCharsRead..], out var bytesRead, out var charsRead, isFinalBlock: final);
+
+				totalBytesRead += bytesRead;
+				totalCharsRead += charsRead;
+				writeBufStart = 0;
+
+				if (status == OperationStatus.DestinationTooSmall)
+				{
+					// Malformed data?
+					throw new InvalidDataException();
+				}
+
+				if (status == OperationStatus.NeedMoreData)
+				{
+					// We got cut short in the middle of a multi-byte UTF-8 sequence.
+					// So we need to move it to the bottom of the span, then read the next bit *past* that.
+					// This copy should be fine because we're only ever gonna be copying up to 4 bytes
+					// from the end of the buffer to the start.
+					// So no chance of overlap.
+					buf[bytesRead..].CopyTo(buf);
+					writeBufStart = bytesReadLeft - bytesRead;
+					continue;
+				}
+
+				Debug.Assert(status == OperationStatus.Done);
+			}
+		}
+#elif NO_UNSAFE
 		public static void WritePrimitive(Stream stream, string value)
 		{
 			if (value == null)
@@ -391,9 +672,6 @@ namespace NetSerializer
 				this.Encoding = new UTF8Encoding(false, true);
 			}
 
-			public const int BYTEBUFFERLEN = 256;
-			public const int CHARBUFFERLEN = 128;
-
 			Encoder m_encoder;
 			Decoder m_decoder;
 
@@ -404,8 +682,8 @@ namespace NetSerializer
 			public Encoder Encoder { get { if (m_encoder == null) m_encoder = this.Encoding.GetEncoder(); return m_encoder; } }
 			public Decoder Decoder { get { if (m_decoder == null) m_decoder = this.Encoding.GetDecoder(); return m_decoder; } }
 
-			public byte[] ByteBuffer { get { if (m_byteBuffer == null) m_byteBuffer = new byte[BYTEBUFFERLEN]; return m_byteBuffer; } }
-			public char[] CharBuffer { get { if (m_charBuffer == null) m_charBuffer = new char[CHARBUFFERLEN]; return m_charBuffer; } }
+			public byte[] ByteBuffer { get { if (m_byteBuffer == null) m_byteBuffer = new byte[StringByteBufferLength]; return m_byteBuffer; } }
+			public char[] CharBuffer { get { if (m_charBuffer == null) m_charBuffer = new char[StringCharBufferLength]; return m_charBuffer; } }
 		}
 
 		[ThreadStatic]
@@ -489,7 +767,7 @@ namespace NetSerializer
 			var decoder = helper.Decoder;
 			var buf = helper.ByteBuffer;
 			char[] chars;
-			if (totalChars <= StringHelper.CHARBUFFERLEN)
+			if (totalChars <= StringCharBufferLength)
 				chars = helper.CharBuffer;
 			else
 				chars = new char[totalChars];

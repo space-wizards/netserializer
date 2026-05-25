@@ -1,6 +1,6 @@
 ﻿/*
  * Copyright 2015 Tomi Valkeinen
- * 
+ *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
@@ -13,6 +13,8 @@ using System.Linq;
 using System.Reflection;
 using System.Reflection.Emit;
 using System.Diagnostics;
+using System.Text;
+using NetSerializer.TypeSerializers;
 
 namespace NetSerializer
 {
@@ -25,9 +27,14 @@ namespace NetSerializer
 			new ObjectSerializer(),
 			new PrimitivesSerializer(),
 			new ArraySerializer(),
+			new ImmutableArraySerializer(),
 			new EnumSerializer(),
 			new DictionarySerializer(),
 			new NullableSerializer(),
+			new ListSerializer(),
+			new NetListAsArraySerializer(),
+			new HashSetSerializer(),
+			new LinkedListSerializer(),
 			new GenericSerializer(),
 		};
 
@@ -113,6 +120,9 @@ namespace NetSerializer
 
 			var stack = new Stack<Type>(roots);
 			var addedMap = new Dictionary<Type, uint>();
+#if DEBUG
+			var originMap = new Dictionary<Type, Type>();
+#endif
 
 			while (stack.Count > 0)
 			{
@@ -124,26 +134,48 @@ namespace NetSerializer
 				if (type.IsAbstract || type.IsInterface)
 					continue;
 
-				if (type.ContainsGenericParameters)
-					throw new NotSupportedException(String.Format("Type {0} contains generic parameters", type.FullName));
-
-				while (m_runtimeTypeIDList.ContainsTypeID(m_nextAvailableTypeID))
-					m_nextAvailableTypeID++;
-
-				uint typeID = m_nextAvailableTypeID++;
-
-				ITypeSerializer serializer = GetTypeSerializer(type);
-
-				var data = new TypeData(type, typeID, serializer);
-				m_runtimeTypeMap[type] = data;
-				m_runtimeTypeIDList[typeID] = data;
-
-				addedMap[type] = typeID;
-
-				foreach (var t in serializer.GetSubtypes(type))
+				try
 				{
-					if (m_runtimeTypeMap.ContainsKey(t) == false)
-						stack.Push(t);
+					if (type.ContainsGenericParameters)
+						throw new NotSupportedException(String.Format("Type {0} contains generic parameters",
+							type.FullName));
+
+					while (m_runtimeTypeIDList.ContainsTypeID(m_nextAvailableTypeID))
+						m_nextAvailableTypeID++;
+
+					uint typeID = m_nextAvailableTypeID++;
+
+					ITypeSerializer serializer = GetTypeSerializer(type);
+
+					var data = new TypeData(type, typeID, serializer);
+					m_runtimeTypeMap[type] = data;
+					m_runtimeTypeIDList[typeID] = data;
+
+					addedMap[type] = typeID;
+
+					foreach (var t in serializer.GetSubtypes(type))
+					{
+						if (m_runtimeTypeMap.ContainsKey(t) == false)
+						{
+							stack.Push(t);
+
+#if DEBUG
+							originMap[t] = type;
+#endif
+						}
+					}
+				}
+				catch (Exception e)
+				{
+					var sb = new StringBuilder($"Failed to add {type} to serializer.");
+#if DEBUG
+					for (var pt = type; pt != null; pt = originMap.GetValueOrDefault(pt))
+					{
+						sb.AppendLine();
+						sb.Append($"Referenced by: {pt}");
+					}
+#endif
+					throw new NotSupportedException(sb.ToString(), e);
 				}
 			}
 
@@ -222,32 +254,49 @@ namespace NetSerializer
 		}
 
 		/// <summary>
+		/// Output the type data that <see cref="GetSHA256"/> calculates a hash from.
+		/// </summary>
+		/// <remarks>
+		/// This can be manually inspected for debugging purposes.
+        /// </remarks>
+		/// <param name="writeTo">Stream to write the result into.</param>
+		/// <param name="writeNewlines">
+		/// Whether to write newline delimiters between entries.
+		/// When true, it is not the canonical form of the data but may make it easier to read.
+		/// </param>
+		public void GetHashManifest(Stream writeTo, bool writeNewlines=false)
+		{
+			using var writer = new StreamWriter(writeTo, leaveOpen: true);
+
+			lock (m_modifyLock)
+			{
+				foreach (var item in m_runtimeTypeIDList.ToSortedList())
+				{
+					writer.Write(item.Key);
+					writer.Write(item.Value.FullName);
+					if (writeNewlines)
+						writer.Write('\n');
+				}
+			}
+		}
+
+		/// <summary>
 		/// Get SHA256 of the serializer type data. The SHA includes TypeIDs and Type's full names.
 		/// The SHA can be used as a relatively good check to verify that two serializers
 		/// (e.g. client and server) have the same type data.
 		/// </summary>
 		public string GetSHA256()
 		{
-			using (var stream = new MemoryStream())
-			using (var writer = new StreamWriter(stream))
-			{
-				lock (m_modifyLock)
-				{
-					foreach (var item in m_runtimeTypeIDList.ToSortedList())
-					{
-						writer.Write(item.Key);
-						writer.Write(item.Value.FullName);
-					}
-				}
+			var stream = new MemoryStream();
 
-				var sha256 = System.Security.Cryptography.SHA256.Create();
-				var bytes = sha256.ComputeHash(stream);
+			GetHashManifest(stream);
 
-				var sb = new System.Text.StringBuilder();
-				foreach (byte b in bytes)
-					sb.Append(b.ToString("x2"));
-				return sb.ToString();
-			}
+			stream.Position = 0;
+
+			using var sha256 = System.Security.Cryptography.SHA256.Create();
+			var bytes = sha256.ComputeHash(stream);
+
+			return Convert.ToHexString(bytes);
 		}
 
 		readonly TypeDictionary m_runtimeTypeMap;
@@ -260,6 +309,10 @@ namespace NetSerializer
 		internal const uint ObjectTypeId = 1;
 
 		internal readonly Settings Settings = new Settings();
+
+		private readonly Dictionary<object, int> _contextMap = new();
+		private object[] _contexts = new object[4];
+		private int _nextContext;
 
 		[Conditional("DEBUG")]
 		void AssertLocked()
@@ -316,6 +369,28 @@ namespace NetSerializer
 			}
 
 			del(this, stream, out value);
+		}
+
+		public int RegisterContext(object context)
+		{
+			AssertLocked();
+
+			if (_contextMap.TryGetValue(context, out var idx))
+				return idx;
+
+			idx = _nextContext++;
+			if (idx >= _contexts.Length)
+				Array.Resize(ref _contexts, _contexts.Length * 2);
+
+			_contexts[idx] = context;
+			_contextMap.Add(context, idx);
+
+			return idx;
+		}
+
+		public object GetContext(int idx)
+		{
+			return _contexts[idx];
 		}
 
 		internal uint GetTypeIdAndSerializer(Type type, out SerializeDelegate<object> del)

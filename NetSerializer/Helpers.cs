@@ -1,6 +1,6 @@
 ﻿/*
  * Copyright 2015 Tomi Valkeinen
- * 
+ *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
@@ -13,7 +13,6 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Reflection.Emit;
-using System.Text;
 
 namespace NetSerializer
 {
@@ -21,7 +20,7 @@ namespace NetSerializer
 	{
 		public static IEnumerable<FieldInfo> GetFieldInfos(Type type)
 		{
-			Debug.Assert(type.IsSerializable);
+			Debug.Assert(type.IsSerializable, $"Type {type} is not marked as serializable");
 
 			var fields = type.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly)
 				.Where(fi => (fi.Attributes & FieldAttributes.NotSerialized) == 0)
@@ -114,7 +113,7 @@ namespace NetSerializer
 
 			// Create a trampoline
 
-			var wrapper = Helpers.GenerateDynamicSerializerStub(paramType);
+			var wrapper = GenerateDynamicSerializerStub(paramType);
 			var il = wrapper.GetILGenerator();
 
 			if (needsInstanceParameter)
@@ -197,6 +196,69 @@ namespace NetSerializer
 			il.Emit(OpCodes.Ret);
 
 			return wrapper.CreateDelegate(delegateType);
+		}
+
+		public static MethodInfo GetGenReader(Type containerType, Type genType, string methodName = "ReadPrimitive")
+		{
+			var mis = containerType.GetMethods(BindingFlags.Static | BindingFlags.Public)
+				.Where(mi => mi.IsGenericMethod && mi.Name == methodName);
+
+			foreach (var mi in mis)
+			{
+				var p = mi.GetParameters();
+
+				if (p.Length != 3)
+					continue;
+
+				if (p[1].ParameterType != typeof(Stream))
+					continue;
+
+				var paramType = p[2].ParameterType;
+
+				if (paramType.IsByRef == false)
+					continue;
+
+				paramType = paramType.GetElementType();
+
+				if (paramType.IsGenericType == false)
+					continue;
+
+				var genParamType = paramType.GetGenericTypeDefinition();
+
+				if (genType == genParamType)
+					return mi;
+			}
+
+			return null;
+		}
+
+		public static MethodInfo GetGenWriter(Type containerType, Type genType, string methodName = "WritePrimitive")
+		{
+			var mis = containerType.GetMethods(BindingFlags.Static | BindingFlags.Public)
+				.Where(mi => mi.IsGenericMethod && mi.Name == methodName);
+
+			foreach (var mi in mis)
+			{
+				var p = mi.GetParameters();
+
+				if (p.Length != 3)
+					continue;
+
+				if (p[1].ParameterType != typeof(Stream))
+					continue;
+
+				var paramType = p[2].ParameterType;
+
+				if (paramType.IsGenericType == false)
+					continue;
+
+				var genParamType = paramType.GetGenericTypeDefinition();
+
+				if (genType == genParamType)
+					return mi;
+			}
+
+			return null;
 		}
 	}
 }
