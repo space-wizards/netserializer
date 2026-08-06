@@ -9,7 +9,7 @@ namespace NetSerializer.UnitTests
 	[Parallelizable(ParallelScope.All)]
 	public class PrimitivesTest
 	{
-#if NET5_0
+#if NET5_0_OR_GREATER
 #if NO_UNSAFE
         [Ignore("Float and half tests are inacurrate due to rounding when NO_UNSAFE is enabled.")]
 #endif
