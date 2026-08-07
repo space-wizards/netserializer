@@ -129,6 +129,10 @@ namespace NetSerializer
 
 			il.MarkLabel(notNullLabel);
 
+			il.Emit(OpCodes.Ldarg_0);
+			il.Emit(OpCodes.Ldloc_S, lenLocal);
+			il.Emit(OpCodes.Call, typeof(Serializer).GetMethod("CheckCollectionLength", BindingFlags.Instance | BindingFlags.NonPublic)!);
+
 			var arrLocal = il.DeclareLocal(type);
 
 			// create new array with len - 1

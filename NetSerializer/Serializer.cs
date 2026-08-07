@@ -55,6 +55,8 @@ namespace NetSerializer
 		public Serializer(IEnumerable<Type> rootTypes, Settings settings)
 		{
 			this.Settings = settings;
+			Primitives.MaxByteArrayLength = settings.MaxByteArrayLength;
+			Primitives.MaxStringLength = settings.MaxStringLength;
 
 			if (this.Settings.CustomTypeSerializers.All(s => s is IDynamicTypeSerializer || s is IStaticTypeSerializer) == false)
 				throw new ArgumentException("TypeSerializers have to implement IDynamicTypeSerializer or IStaticTypeSerializer");
@@ -93,6 +95,8 @@ namespace NetSerializer
 		public Serializer(Dictionary<Type, uint> typeMap, Settings settings)
 		{
 			this.Settings = settings;
+			Primitives.MaxByteArrayLength = settings.MaxByteArrayLength;
+			Primitives.MaxStringLength = settings.MaxStringLength;
 
 			if (this.Settings.CustomTypeSerializers.All(s => s is IDynamicTypeSerializer || s is IStaticTypeSerializer) == false)
 				throw new ArgumentException("TypeSerializers have to implement IDynamicTypeSerializer or IStaticTypeSerializer");
@@ -337,6 +341,35 @@ namespace NetSerializer
 			ObjectSerializer.Deserialize(this, stream, out ob);
 		}
 
+		public bool TryDeserialize(Stream stream, out object ob)
+		{
+			return ObjectSerializer.TryDeserialize(this, stream, out ob);
+		}
+
+		public bool TryGetTypeFromSerializedObject(Stream stream, out Type type)
+		{
+			Primitives.ReadPrimitive(stream, out uint id);
+			return TryGetTypeFromId(id, out type);
+		}
+
+		public bool TryGetTypeFromId(uint id, out Type type)
+		{
+			if (id == 0)
+			{
+				type = null;
+				return true;
+			}
+
+			if (m_runtimeTypeIDList.TryGetValue(id, out var data))
+			{
+				type = data.Type;
+				return true;
+			}
+
+			type = null;
+			return false;
+		}
+
 		/// <summary>
 		/// Serialize object graph without writing the type-id of the root type. This can be useful e.g. when
 		/// serializing a known value type, as this will avoid boxing.
@@ -369,6 +402,19 @@ namespace NetSerializer
 			}
 
 			del(this, stream, out value);
+		}
+
+		internal void CheckCollectionLength(uint encodedLength)
+		{
+			if (encodedLength == 0)
+				return;
+
+			var length = encodedLength - 1;
+			if (length > Settings.MaxCollectionLength)
+			{
+				throw new InvalidDataException(
+					$"Serialized collection length {length} exceeds maximum {Settings.MaxCollectionLength}.");
+			}
 		}
 
 		public int RegisterContext(object context)
@@ -412,7 +458,8 @@ namespace NetSerializer
 
 		internal DeserializeDelegate<object> GetDeserializeTrampolineFromId(uint id)
 		{
-			var data = m_runtimeTypeIDList[id];
+			if (!m_runtimeTypeIDList.TryGetValue(id, out var data))
+				throw new InvalidDataException($"Unknown serialized type ID {id}.");
 
 			if (data.ReaderTrampolineDelegate != null)
 				return data.ReaderTrampolineDelegate;
@@ -420,6 +467,27 @@ namespace NetSerializer
 			lock (m_modifyLock)
 			{
 				return GenerateReaderTrampoline(data.Type);
+			}
+		}
+
+		internal bool TryGetDeserializeTrampolineFromId(uint id, out DeserializeDelegate<object> del)
+		{
+			if (!m_runtimeTypeIDList.TryGetValue(id, out var data))
+			{
+				del = null;
+				return false;
+			}
+
+			if (data.ReaderTrampolineDelegate != null)
+			{
+				del = data.ReaderTrampolineDelegate;
+				return true;
+			}
+
+			lock (m_modifyLock)
+			{
+				del = GenerateReaderTrampoline(data.Type);
+				return true;
 			}
 		}
 

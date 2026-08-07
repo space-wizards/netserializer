@@ -34,6 +34,18 @@ namespace NetSerializer
 			return typeID < m_array.Length && m_array[typeID] != null;
 		}
 
+		public bool TryGetValue(uint typeID, out TypeData data)
+		{
+			if (typeID < m_array.Length && m_array[typeID] != null)
+			{
+				data = m_array[typeID];
+				return true;
+			}
+
+			data = null;
+			return false;
+		}
+
 		public TypeData this[uint idx]
 		{
 			get

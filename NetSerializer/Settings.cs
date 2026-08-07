@@ -14,6 +14,25 @@ namespace NetSerializer
 	public class Settings
 	{
 		/// <summary>
+		/// Maximum number of elements allowed in a deserialized collection.
+		/// </summary>
+		/// <remarks>
+		/// This defends network deserialization from allocating attacker-controlled
+		/// arrays, lists, dictionaries, and similar collection types.
+		/// </remarks>
+		public uint MaxCollectionLength = 1024 * 1024;
+
+		/// <summary>
+		/// Maximum number of bytes allowed in a deserialized byte array.
+		/// </summary>
+		public uint MaxByteArrayLength = 16 * 1024 * 1024;
+
+		/// <summary>
+		/// Maximum number of UTF-16 code units allowed in a deserialized string.
+		/// </summary>
+		public uint MaxStringLength = 16 * 1024 * 1024;
+
+		/// <summary>
 		/// Array of custom TypeSerializers
 		/// </summary>
 		public ITypeSerializer[] CustomTypeSerializers = new ITypeSerializer[0];

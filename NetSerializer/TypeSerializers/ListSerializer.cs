@@ -123,6 +123,10 @@ namespace NetSerializer.TypeSerializers
 
 			il.MarkLabel(notNullLabel);
 
+			il.Emit(OpCodes.Ldarg_0);
+			il.Emit(OpCodes.Ldloc_S, lenLocal);
+			il.Emit(OpCodes.Call, typeof(Serializer).GetMethod("CheckCollectionLength", BindingFlags.Instance | BindingFlags.NonPublic)!);
+
 			var listLocal = il.DeclareLocal(type);
 
 			// -- length

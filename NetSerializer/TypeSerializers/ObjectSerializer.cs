@@ -79,5 +79,33 @@ namespace NetSerializer
 			var del = serializer.GetDeserializeTrampolineFromId(id);
 			del(serializer, stream, out ob);
 		}
+
+		public static bool TryDeserialize(Serializer serializer, Stream stream, out object ob)
+		{
+			uint id;
+
+			Primitives.ReadPrimitive(stream, out id);
+
+			if (id == 0)
+			{
+				ob = null;
+				return true;
+			}
+
+			if (id == Serializer.ObjectTypeId)
+			{
+				ob = new object();
+				return true;
+			}
+
+			if (!serializer.TryGetDeserializeTrampolineFromId(id, out var del))
+			{
+				ob = null;
+				return false;
+			}
+
+			del(serializer, stream, out ob);
+			return true;
+		}
 	}
 }

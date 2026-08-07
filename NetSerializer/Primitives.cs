@@ -25,6 +25,9 @@ namespace NetSerializer
 		private const int StringByteBufferLength = 256;
 		private const int StringCharBufferLength = 128;
 
+		public static uint MaxByteArrayLength = 16 * 1024 * 1024;
+		public static uint MaxStringLength = 16 * 1024 * 1024;
+
 		public static MethodInfo GetWritePrimitive(Type type)
 		{
 			return typeof(Primitives).GetMethod("WritePrimitive",
@@ -547,6 +550,8 @@ namespace NetSerializer
 			totalBytes -= 1;
 
 			ReadPrimitive(stream, out uint totalChars);
+			if (totalChars > MaxStringLength)
+				throw new InvalidDataException($"Serialized string length {totalChars} exceeds maximum {MaxStringLength}.");
 
 			value = string.Create((int) totalChars, ((int) totalBytes, stream), _stringSpanRead);
 		}
@@ -645,6 +650,8 @@ namespace NetSerializer
 
 			uint totalChars;
 			ReadPrimitive(stream, out totalChars);
+			if (totalChars > MaxStringLength)
+				throw new InvalidDataException($"Serialized string length {totalChars} exceeds maximum {MaxStringLength}.");
 
 			len -= 1;
 
@@ -759,6 +766,8 @@ namespace NetSerializer
 
 			uint totalChars;
 			ReadPrimitive(stream, out totalChars);
+			if (totalChars > MaxStringLength)
+				throw new InvalidDataException($"Serialized string length {totalChars} exceeds maximum {MaxStringLength}.");
 
 			var helper = s_stringHelper;
 			if (helper == null)
@@ -840,6 +849,8 @@ namespace NetSerializer
 			}
 
 			len -= 1;
+			if (len > MaxByteArrayLength)
+				throw new InvalidDataException($"Serialized byte array length {len} exceeds maximum {MaxByteArrayLength}.");
 
 			value = new byte[len];
 			int l = 0;
